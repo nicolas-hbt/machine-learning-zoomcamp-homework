@@ -20,25 +20,39 @@ except FileNotFoundError:
 print("Artifacts loaded successfully.")
 
 
+@app.route('/health', methods=['GET'])
+def health():
+    """Simple health check endpoint."""
+    return "OK", 200
+
+
 @app.route('/predict', methods=['POST'])
 def predict():
+    """Accepts JSON input and returns model predictions."""
     try:
         # Get JSON data from the request
         json_data = request.get_json()
 
-        # Expecting a list of records, like:
-        # [
-        #   {"datetime": "2011-01-20 00:00:00", "season": 1, ...},
-        #   {"datetime": "2011-01-20 01:00:00", "season": 1, ...}
-        # ]
+        # Convert JSON list of records to a DataFrame
         input_df = pd.DataFrame(json_data)
 
+        # Preprocess the data using the loaded processor
         X_processed = processor.transform(input_df, scaled=False)
 
+        # --- THIS IS THE FIX ---
+        # Drop the 'day' column, as the model was not trained on it
+        if 'day' in X_processed.columns:
+            X_processed = X_processed.drop(columns=['day'])
+        # ----------------------
+
+        # Make predictions (log-transformed)
         log_predictions = model.predict(X_processed)
+
+        # Inverse transform (from log space)
         predictions = np.expm1(log_predictions)
         predictions[predictions < 0] = 0
 
+        # Return predictions as JSON
         return jsonify({'predictions': predictions.tolist()})
 
     except Exception as e:
@@ -46,12 +60,5 @@ def predict():
 
 
 if __name__ == '__main__':
-    # port=5001 to avoid conflicts with other common ports
-    app.run(debug=True, port=5001, host='0.0.0.0')
-
-# To run:
-# python serve.py
-#
-# To test (in another terminal):
-# curl -X POST http://127.0.0.1:5001/predict -H "Content-Type: application/json" \
-# -d '[{"datetime": "2012-12-20 00:00:00", "season": 4, "holiday": 0, "workingday": 1, "weather": 1, "temp": 10.66, "humidity": 56, "windspeed": 26.0027}]'
+    # Run on port 9696 and make it accessible outside the container (host='0.0.0.0')
+    app.run(debug=False, host='0.0.0.0', port=9696)

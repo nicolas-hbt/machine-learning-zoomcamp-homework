@@ -23,8 +23,10 @@ def make_predictions(input_file_path):
     input_df = pd.read_csv(input_file_path)
 
     # Use the *transform* method of our loaded processor
-    # We pass scaled=False because GBR doesn't need scaled data
     X_processed = processor.transform(input_df, scaled=False)
+
+    if 'day' in X_processed.columns:
+        X_processed = X_processed.drop(columns=['day'])
 
     # Predict
     log_predictions = model.predict(X_processed)
