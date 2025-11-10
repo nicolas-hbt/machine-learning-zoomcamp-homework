@@ -1,86 +1,230 @@
-# train.py
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.model_selection import PredefinedSplit, GridSearchCV
-import pickle
-from utils import DataProcessor
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.neural_network import MLPRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
 import warnings
 
 warnings.filterwarnings('ignore')
 
-print("Starting training script...")
 
-# --- 1. Load Data ---
-train_df = pd.read_csv('train.csv')
-y_train_log = np.log1p(train_df['count'])
+def load_data(train_path='train.csv'):
+    """
+    Loads the raw training data.
+    """
+    try:
+        df = pd.read_csv(train_path)
+        return df
+    except FileNotFoundError:
+        print(f"Error: {train_path} not found.")
+        print("Please download the data from: https://www.kaggle.com/competitions/bike-sharing-demand/data")
+        return None
 
-# --- 2. Create the Validation Split FIRST ---
-# We must do this before fitting the processor to prevent leakage
-print("Creating validation split...")
-# Engineer 'day' feature just for the split
-datetime_s = pd.to_datetime(train_df['datetime'])
-train_days = datetime_s.dt.day
-split_indices = [-1 if d <= 15 else 0 for d in train_days]
-ps = PredefinedSplit(test_fold=split_indices)
 
-# Get the indices for the training fold (days 1-15)
-train_fold_indices = np.where(np.array(split_indices) == -1)[0]
-train_fold_df = train_df.iloc[train_fold_indices]
+def preprocess(df):
+    """
+    Performs all feature engineering and splits data into X and y.
+    """
+    # --- 1. Create Datetime Features ---
+    # This is the base for all our time features
+    df['datetime'] = pd.to_datetime(df['datetime'])
 
-print("Validation split created.")
+    # Extract original time components
+    df['hour'] = df['datetime'].dt.hour
+    df['month'] = df['datetime'].dt.month
+    df['day'] = df['datetime'].dt.day
+    df['year'] = df['datetime'].dt.year
+    df['dayofweek'] = df['datetime'].dt.dayofweek
 
-# --- 3. Fit DataProcessor (Leak-Free) ---
-# Fit the processor ONLY on the training fold (days 1-15)
-processor = DataProcessor()
-print("Fitting processor on training fold (days 1-15)...")
-processor.fit(train_fold_df)
+    # --- 2. Sin/Cos Cyclical Feature Encoding ---
+    # As discussed, this is better than simple OHE for time features
+    df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24.0)
+    df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24.0)
 
-# --- 4. Transform ALL Training Data ---
-# Now, transform the entire train_df (days 1-19)
-print("Transforming entire training set (days 1-19)...")
-X_train_processed = processor.transform(train_df)
+    df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12.0)
+    df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12.0)
 
-# We can now drop the 'day' column, which transform() adds
-X_train_processed = X_train_processed.drop(columns=['day'])
+    df['dayofweek_sin'] = np.sin(2 * np.pi * df['dayofweek'] / 7.0)
+    df['dayofweek_cos'] = np.cos(2 * np.pi * df['dayofweek'] / 7.0)
 
-print("Data processing complete.")
+    df['day_sin'] = np.sin(2 * np.pi * df['day'] / 31.0)
+    df['day_cos'] = np.cos(2 * np.pi * df['day'] / 31.0)
 
-# --- 5. Model Training & Tuning ---
-print("Tuning Gradient Boosting Regressor...")
-gbr = GradientBoostingRegressor(random_state=42)
-gbr_params = {
-    'n_estimators': [100, 250, 500],
-    'learning_rate': [0.01, 0.05, 0.1],
-    'max_depth': [3, 5, 7]
-}
+    # --- 3. One-Hot Encoding for Categoricals ---
+    df = pd.get_dummies(df, columns=['season'], prefix='season', drop_first=False, dtype=bool)
+    df = pd.get_dummies(df, columns=['holiday'], prefix='holiday', drop_first=False, dtype=bool)
+    df = pd.get_dummies(df, columns=['workingday'], prefix='workingday', drop_first=False, dtype=bool)
+    df = pd.get_dummies(df, columns=['weather'], prefix='weather', drop_first=False, dtype=bool)
 
-# Pass the full X_train_processed, y_train_log, and our custom 'ps' split
-grid_gbr = GridSearchCV(estimator=gbr, param_grid=gbr_params, cv=ps,
-                        scoring='neg_mean_squared_error', n_jobs=-1, verbose=2)
+    # --- 4. Define Target (y) and Features (X) ---
+    # Log-transform the target variable 'count' for RMSLE
+    # We use np.log1p which is log(1 + y)
+    y = np.log1p(df['count'])
 
-grid_gbr.fit(X_train_processed, y_train_log)
+    # We drop the original time columns, the datetime object,
+    # and the target-related columns.
+    columns_to_drop = [
+        'datetime', 'hour', 'month', 'day', 'dayofweek',
+        'count', 'casual', 'registered'
+    ]
 
-best_rmsle = np.sqrt(-grid_gbr.best_score_)
-print(f"Best GBR RMSLE: {best_rmsle:.5f}")
-print(f"Best GBR Params: {grid_gbr.best_params_}")
+    X = df.drop(columns=columns_to_drop)
 
-# --- 6. Save Artifacts (Retrain on all data) ---
-# For the final model, we retrain on ALL train data
-print("Retraining final model on all training data (days 1-19)...")
-processor_final = DataProcessor()
-processor_final.fit(train_df) # Fit on all data
-X_train_final = processor_final.transform(train_df).drop(columns=['day'])
+    return X, y
 
-# Use the best params found by GridSearchCV
-final_model = GradientBoostingRegressor(random_state=42, **grid_gbr.best_params_)
-final_model.fit(X_train_final, y_train_log)
 
-print("Saving artifacts...")
-with open('processor.pkl', 'wb') as f:
-    pickle.dump(processor_final, f)
+def define_models():
+    """
+    Defines the dictionary of models for the "manual grid search"
+    we discussed.
+    """
+    models = {
 
-with open('model.pkl', 'wb') as f:
-    pickle.dump(final_model, f)
+        "Linear Regression": Pipeline([
+            ('scaler', StandardScaler()),
+            ('model', LinearRegression())
+        ]),
 
-print("Training complete. 'processor.pkl' and 'model.pkl' saved.")
+        "RF (n_estimators=100, max_depth=10)": RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42,
+                                                                     n_jobs=-1),
+        "RF (n_estimators=200, max_depth=10)": RandomForestRegressor(n_estimators=200, max_depth=10, random_state=42,
+                                                                     n_jobs=-1),
+        "RF (n_estimators=100, max_depth=20)": RandomForestRegressor(n_estimators=100, max_depth=20, random_state=42,
+                                                                     n_jobs=-1),
+
+        "GB (n_estimators=100, lr=0.1)": GradientBoostingRegressor(n_estimators=100, learning_rate=0.1,
+                                                                   random_state=42),
+        "GB (n_estimators=200, lr=0.1)": GradientBoostingRegressor(n_estimators=200, learning_rate=0.1,
+                                                                   random_state=42),
+        "GB (n_estimators=100, lr=0.05)": GradientBoostingRegressor(n_estimators=100, learning_rate=0.05,
+                                                                    random_state=42),
+
+        "MLP (layers=100,50)": Pipeline([
+            ('scaler', StandardScaler()),
+            ('model', MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=500, early_stopping=True, random_state=42))
+        ]),
+        "MLP (layers=50,25)": Pipeline([
+            ('scaler', StandardScaler()),
+            ('model', MLPRegressor(hidden_layer_sizes=(50, 25), max_iter=500, early_stopping=True, random_state=42))
+        ])
+    }
+    return models
+
+
+def run_cross_validation(X, y, models, n_splits=5):
+    """
+    Runs both Expanding and Sliding Window CV for all defined models.
+    """
+    # --- 1. Setup CV Splitters and Parameters ---
+    tscv_expanding = TimeSeriesSplit(n_splits=n_splits)
+
+    all_splits = list(tscv_expanding.split(X))
+    first_fold_train_size = len(all_splits[0][0])
+
+    print(f"--- Initializing CV ---")
+    print(f"Total samples: {len(X)}")
+    print(f"Number of splits: {n_splits}")
+    print(f"Sliding window size set to: {first_fold_train_size} samples")
+    print("-" * 30 + "\n")
+
+    results = []
+
+    # Because y is log-transformed, this *is* RMSLE.
+    rmse = lambda y_true, y_pred: np.sqrt(mean_squared_error(y_true, y_pred))
+
+    # --- 2. Run Evaluation Loop ---
+    # === A. Expanding Window ===
+    print("Running Expanding Window CV...")
+    for fold, (train_index, test_index) in enumerate(all_splits, 1):
+        X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+        y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+
+        print(f"  Expanding Fold {fold}/{n_splits}...")
+
+        for name, model in models.items():
+            model.fit(X_train, y_train)
+            preds_log = model.predict(X_test)
+            score = rmse(y_test, preds_log)  # y_test is already log(y)
+
+            results.append({
+                "cv_method": "Expanding",
+                "model": name,
+                "fold": fold,
+                "rmsle": score
+            })
+
+    # === B. Sliding Window ===
+    print("\nRunning Sliding Window CV...")
+    for fold, (train_index, test_index) in enumerate(all_splits, 1):
+
+        # THIS IS THE "SLIDING" PART:
+        # We slice the train_index to only keep the last N samples
+        sliding_train_index = train_index[-first_fold_train_size:]
+
+        X_train, X_test = X.iloc[sliding_train_index], X.iloc[test_index]
+        y_train, y_test = y.iloc[sliding_train_index], y.iloc[test_index]
+
+        print(f"  Sliding Fold {fold}/{n_splits}...")
+
+        for name, model in models.items():
+            model.fit(X_train, y_train)
+            preds_log = model.predict(X_test)
+            score = rmse(y_test, preds_log)
+
+            results.append({
+                "cv_method": "Sliding",
+                "model": name,
+                "fold": fold,
+                "rmsle": score
+            })
+
+    return pd.DataFrame(results)
+
+
+def summarize_results(results_df):
+    """
+    Creates and prints the final pivot table of mean scores.
+    """
+
+    final_scores = results_df.pivot_table(
+        index="model",
+        columns="cv_method",
+        values="rmsle",  # This value is the RMSE of log-transformed data
+        aggfunc="mean"
+    )
+
+    final_scores['mean_rmsle'] = final_scores.mean(axis=1)
+    final_scores = final_scores.sort_values(by='mean_rmsle')
+
+    print("\n=== Final Model Comparison (Mean RMSLE) ===")
+    print(final_scores.to_markdown(floatfmt=".6f"))
+
+
+def main():
+    """
+    Main function to run the entire pipeline.
+    """
+    print("Loading data...")
+    # Assumes 'train.csv' is in the same directory
+    df = load_data('train.csv')
+
+    if df is not None:
+        print("Preprocessing data and engineering features...")
+        X, y = preprocess(df)
+
+        print("Defining models...")
+        models = define_models()
+
+        print("Starting cross-validation...")
+        results_df = run_cross_validation(X, y, models, n_splits=5)
+
+        print("Summarizing results...")
+        summarize_results(results_df)
+
+
+if __name__ == "__main__":
+    main()
