@@ -1,12 +1,10 @@
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import TimeSeriesSplit
-from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
+from sklearn.base import clone
+import pickle
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -77,51 +75,25 @@ def preprocess(df):
     return X, y
 
 
-def define_models():
+def define_best_model():
     """
-    Defines the dictionary of models for the "manual grid search"
-    we discussed.
+    Defines and returns the single best model identified from the analysis notebook.
     """
-    models = {
-
-        "Linear Regression": Pipeline([
-            ('scaler', StandardScaler()),
-            ('model', LinearRegression())
-        ]),
-
-        "RF (n_estimators=100, max_depth=10)": RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42,
-                                                                     n_jobs=-1),
-        "RF (n_estimators=200, max_depth=10)": RandomForestRegressor(n_estimators=200, max_depth=10, random_state=42,
-                                                                     n_jobs=-1),
-        "RF (n_estimators=100, max_depth=20)": RandomForestRegressor(n_estimators=100, max_depth=20, random_state=42,
-                                                                     n_jobs=-1),
-
-        "GB (n_estimators=100, lr=0.1)": GradientBoostingRegressor(n_estimators=100, learning_rate=0.1,
-                                                                   random_state=42),
-        "GB (n_estimators=200, lr=0.1)": GradientBoostingRegressor(n_estimators=200, learning_rate=0.1,
-                                                                   random_state=42),
-        "GB (n_estimators=100, lr=0.05)": GradientBoostingRegressor(n_estimators=100, learning_rate=0.05,
-                                                                    random_state=42),
-
-        "MLP (layers=100,50)": Pipeline([
-            ('scaler', StandardScaler()),
-            ('model', MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=500, early_stopping=True, random_state=42))
-        ]),
-        "MLP (layers=50,25)": Pipeline([
-            ('scaler', StandardScaler()),
-            ('model', MLPRegressor(hidden_layer_sizes=(50, 25), max_iter=500, early_stopping=True, random_state=42))
-        ])
-    }
-    return models
+    print("Defining best model: GB(n_estimators=200, lr=0.1)")
+    model = GradientBoostingRegressor(
+        n_estimators=200,
+        learning_rate=0.1,
+        random_state=42
+    )
+    return model
 
 
-def run_cross_validation(X, y, models, n_splits=5):
+def run_cross_validation(X, y, model, n_splits=5):
     """
-    Runs both Expanding and Sliding Window CV for all defined models.
+    Runs both Expanding and Sliding Window CV for the single best model.
     """
     # --- 1. Setup CV Splitters and Parameters ---
     tscv_expanding = TimeSeriesSplit(n_splits=n_splits)
-
     all_splits = list(tscv_expanding.split(X))
     first_fold_train_size = len(all_splits[0][0])
 
@@ -132,11 +104,13 @@ def run_cross_validation(X, y, models, n_splits=5):
     print("-" * 30 + "\n")
 
     results = []
+    model_name = "GB(n=200, lr=0.1)"
 
-    # Because y is log-transformed, this *is* RMSLE.
+    # Define our metric: RMSE. Because y is log-transformed, this *is* RMSLE.
     rmse = lambda y_true, y_pred: np.sqrt(mean_squared_error(y_true, y_pred))
 
     # --- 2. Run Evaluation Loop ---
+
     # === A. Expanding Window ===
     print("Running Expanding Window CV...")
     for fold, (train_index, test_index) in enumerate(all_splits, 1):
@@ -145,43 +119,41 @@ def run_cross_validation(X, y, models, n_splits=5):
 
         print(f"  Expanding Fold {fold}/{n_splits}...")
 
-        for name, model in models.items():
-            model.fit(X_train, y_train)
-            preds_log = model.predict(X_test)
-            score = rmse(y_test, preds_log)  # y_test is already log(y)
+        # We clone the model to ensure it's fresh for each fold
+        model_clone = clone(model)
+        model_clone.fit(X_train, y_train)
+        preds_log = model_clone.predict(X_test)
+        score = rmse(y_test, preds_log)  # y_test is already log(y)
 
-            results.append({
-                "cv_method": "Expanding",
-                "model": name,
-                "fold": fold,
-                "rmsle": score
-            })
+        results.append({
+            "cv_method": "Expanding",
+            "model": model_name,
+            "fold": fold,
+            "rmsle": score
+        })
 
     # === B. Sliding Window ===
     print("\nRunning Sliding Window CV...")
     for fold, (train_index, test_index) in enumerate(all_splits, 1):
-
-        # THIS IS THE "SLIDING" PART:
-        # We slice the train_index to only keep the last N samples
         sliding_train_index = train_index[-first_fold_train_size:]
-
         X_train, X_test = X.iloc[sliding_train_index], X.iloc[test_index]
         y_train, y_test = y.iloc[sliding_train_index], y.iloc[test_index]
 
         print(f"  Sliding Fold {fold}/{n_splits}...")
 
-        for name, model in models.items():
-            model.fit(X_train, y_train)
-            preds_log = model.predict(X_test)
-            score = rmse(y_test, preds_log)
+        model_clone = clone(model)
+        model_clone.fit(X_train, y_train)
+        preds_log = model_clone.predict(X_test)
+        score = rmse(y_test, preds_log)
 
-            results.append({
-                "cv_method": "Sliding",
-                "model": name,
-                "fold": fold,
-                "rmsle": score
-            })
+        results.append({
+            "cv_method": "Sliding",
+            "model": model_name,
+            "fold": fold,
+            "rmsle": score
+        })
 
+    print("\n--- Evaluation Complete ---")
     return pd.DataFrame(results)
 
 
@@ -189,11 +161,10 @@ def summarize_results(results_df):
     """
     Creates and prints the final pivot table of mean scores.
     """
-
     final_scores = results_df.pivot_table(
         index="model",
         columns="cv_method",
-        values="rmsle",  # This value is the RMSE of log-transformed data
+        values="rmsle",
         aggfunc="mean"
     )
 
@@ -202,6 +173,21 @@ def summarize_results(results_df):
 
     print("\n=== Final Model Comparison (Mean RMSLE) ===")
     print(final_scores.to_markdown(floatfmt=".6f"))
+
+
+def train_and_save_model(X, y, model, filename="gb_model.pkl"):
+    """
+    Trains the final model on ALL data and saves it to a pickle file.
+    """
+    print(f"\nTraining final model on {len(X)} samples...")
+
+    # We use the original model object, which is unfitted
+    model.fit(X, y)
+
+    print(f"Saving model to {filename}...")
+    with open(filename, 'wb') as f:
+        pickle.dump(model, f)
+    print("Model saved successfully.")
 
 
 def main():
@@ -216,14 +202,19 @@ def main():
         print("Preprocessing data and engineering features...")
         X, y = preprocess(df)
 
-        print("Defining models...")
-        models = define_models()
+        print("Defining model...")
+        best_model = define_best_model()
 
         print("Starting cross-validation...")
-        results_df = run_cross_validation(X, y, models, n_splits=5)
+        # Pass the single model object
+        results_df = run_cross_validation(X, y, best_model, n_splits=5)
 
         print("Summarizing results...")
         summarize_results(results_df)
+
+        print("Training and saving final model...")
+        # Pass the *original* unfitted model to be retrained on all data
+        train_and_save_model(X, y, best_model, filename="gb_model.pkl")
 
 
 if __name__ == "__main__":
