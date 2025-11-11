@@ -1,38 +1,25 @@
-# Stage 1: Build the environment
-# Use the Python version specified in pyproject.toml
-FROM python:3.11-slim as builder
+# Use the same slim Python 3.12 base image
+FROM python:3.12-slim
 
-# Install uv (the new fast pip)
+# Install uv, the tool we use for package management
 RUN pip install uv
 
+# Set the working directory inside the container
 WORKDIR /app
 
-# Copy dependency definition files
-COPY pyproject.toml uv.lock ./
+# Copy the production requirements file
+COPY requirements.txt .
 
-# Install dependencies using the lock file for reproducible builds
-RUN uv pip sync uv.lock
+# Install the dependencies using uv
+# This is much faster and installs *only* what we need
+RUN uv pip install -r requirements.txt
 
-# ---
-# Stage 2: Create the final, lightweight production image
-FROM python:3.11-slim
+# Copy the application code and the trained model
+# We need train.py because predict.py imports its 'preprocess' function
+COPY ["predict.py", "train.py", "gb_model.pkl", "./"]
 
-WORKDIR /app
-
-# Copy the virtual environment (with installed packages) from the builder stage
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
-
-# Copy the application source code and model artifacts
-# IMPORTANT: You must run train.py to create these files BEFORE building!
-COPY serve.py .
-COPY utils.py .
-COPY processor.pkl .
-COPY model.pkl .
-
-# Expose the port the app will run on
+# Expose the port the app runs on
 EXPOSE 9696
 
 # Define the command to run the application using gunicorn
-# This runs 4 worker processes, binding to all interfaces on port 9696
-CMD ["gunicorn", "--bind=0.0.0.0:9696", "--workers=4", "serve:app"]
+ENTRYPOINT ["gunicorn", "--bind=0.0.0.0:9696", "predict:app"]
