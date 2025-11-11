@@ -11,8 +11,9 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install the dependencies using uv
-# This is much faster and installs *only* what we need
-RUN uv pip install -r requirements.txt
+# mind the --system as we want to install them globally in the container, otherwise it won't work
+# uv is designed to protect your system by refusing to install packages globally (outside a virtual environment) by default
+RUN uv pip install --system -r requirements.txt
 
 # Copy the application code and the trained model
 # We need train.py because predict.py imports its 'preprocess' function
