@@ -8,9 +8,10 @@ input_data = {
     "holiday": 0,
     "workingday": 1,
     "weather": 1,
+    "temp": 10.21,
+    "atemp": 8.32,
     "humidity": 77,
     "windspeed": 5.9987,
-    "temp": 10.21,
     # Note: We don't need 'atemp' as it's not used in your preprocess
     # Note: We don't send 'year' or 'hour', as preprocess() *creates* them
 }
