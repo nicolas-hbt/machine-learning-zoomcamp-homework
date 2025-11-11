@@ -1,6 +1,7 @@
 import pickle
 import numpy as np
 import pandas as pd
+import train
 from flask import Flask, request, jsonify
 
 
@@ -18,9 +19,19 @@ def predict():
     # Get JSON data from the request
     json_data = request.get_json()
 
-    X = pd.DataFrame(json_data)
+    # --- Create DataFrame from a *list* of dicts ---
+    # This tells pandas to treat the dict as a single row
+    X_raw = pd.DataFrame([json_data])
+    try:
+        # 'y' will be None, so we just ignore it with '_'
+        X_processed, _ = train.preprocess(X_raw)
 
-    log_predictions = model.predict(X)
+    except KeyError as e:
+        # This will catch errors if the input JSON is missing a required
+        # raw column (like 'datetime' or 'season')
+        return jsonify({'error': f'Missing expected input feature: {str(e)}'}), 400
+
+    log_predictions = model.predict(X_processed)
 
     # Inverse transform (from log space)
     predictions = np.expm1(log_predictions)

@@ -25,13 +25,13 @@ def load_data(train_path='train.csv'):
 
 def preprocess(df):
     """
-    Performs all feature engineering and splits data into X and y.
+    Performs all feature engineering.
+    Handles both training (with 'count') and inference (without 'count').
     """
     # --- 1. Create Datetime Features ---
-    # This is the base for all our time features
+    # The 'datetime' column MUST be present in the input df
     df['datetime'] = pd.to_datetime(df['datetime'])
 
-    # Extract original time components
     df['hour'] = df['datetime'].dt.hour
     df['month'] = df['datetime'].dt.month
     df['day'] = df['datetime'].dt.day
@@ -39,7 +39,6 @@ def preprocess(df):
     df['dayofweek'] = df['datetime'].dt.dayofweek
 
     # --- 2. Sin/Cos Cyclical Feature Encoding ---
-    # As discussed, this is better than simple OHE for time features
     df['hour_sin'] = np.sin(2 * np.pi * df['hour'] / 24.0)
     df['hour_cos'] = np.cos(2 * np.pi * df['hour'] / 24.0)
 
@@ -52,26 +51,36 @@ def preprocess(df):
     df['day_sin'] = np.sin(2 * np.pi * df['day'] / 31.0)
     df['day_cos'] = np.cos(2 * np.pi * df['day'] / 31.0)
 
-    # --- 3. One-Hot Encoding for Categoricals ---
+    # --- 3. Set Categorical Types (Solves Inference Problem) ---
+    # This ensures get_dummies creates all columns, even for a single row.
+    df['season'] = pd.Categorical(df['season'], categories=[1, 2, 3, 4])
+    df['holiday'] = pd.Categorical(df['holiday'], categories=[0, 1])
+    df['workingday'] = pd.Categorical(df['workingday'], categories=[0, 1])
+    df['weather'] = pd.Categorical(df['weather'], categories=[1, 2, 3, 4])
+
+    # --- 4. One-Hot Encoding for Categoricals ---
     df = pd.get_dummies(df, columns=['season'], prefix='season', drop_first=False, dtype=bool)
     df = pd.get_dummies(df, columns=['holiday'], prefix='holiday', drop_first=False, dtype=bool)
     df = pd.get_dummies(df, columns=['workingday'], prefix='workingday', drop_first=False, dtype=bool)
     df = pd.get_dummies(df, columns=['weather'], prefix='weather', drop_first=False, dtype=bool)
 
-    # --- 4. Define Target (y) and Features (X) ---
-    # Log-transform the target variable 'count' for RMSLE
-    # We use np.log1p which is log(1 + y)
-    y = np.log1p(df['count'])
+    # --- 5. Define Target (y) and Features (X) ---
+    y = None
+    if 'count' in df.columns:
+        # Only create 'y' if 'count' exists (i.e., during training)
+        y = np.log1p(df['count'])
 
-    # We drop the original time columns, the datetime object,
-    # and the target-related columns.
+    # Columns to drop (originals, time components, targets)
     columns_to_drop = [
         'datetime', 'hour', 'month', 'day', 'dayofweek',
         'count', 'casual', 'registered'
     ]
 
-    X = df.drop(columns=columns_to_drop)
+    # Drop only the columns that actually exist in the current dataframe
+    existing_cols_to_drop = [col for col in columns_to_drop if col in df.columns]
+    X = df.drop(columns=existing_cols_to_drop)
 
+    # 'y' will be None during inference, which is fine
     return X, y
 
 
