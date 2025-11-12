@@ -18,7 +18,7 @@ RUN apt-get autoremove -y
 
 # Copy the application code and the trained model
 # We need train.py because predict.py imports its 'preprocess' function
-COPY ["predict.py", "train.py", "gb_model.pkl", "./"]
+COPY ["predict.py", "predict_test.py", "train.py", "gb_model.pkl", "./"]
 
 # Expose the port the app runs on
 EXPOSE 9696
